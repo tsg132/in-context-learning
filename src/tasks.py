@@ -60,6 +60,7 @@ def get_task_sampler(
         "quadratic_regression": QuadraticRegression,
         "relu_2nn_regression": Relu2nnRegression,
         "decision_tree": DecisionTree,
+        "rff_regression": RFFRegression,
     }
     if task_name in task_names_to_classes:
         task_cls = task_names_to_classes[task_name]
@@ -71,6 +72,80 @@ def get_task_sampler(
     else:
         print("Unknown task")
         raise NotImplementedError
+
+
+class RFFRegression(Task):
+    
+    def __init__(self, n_dims, batch_size, pool_dict=None, seeds=None, scale=1, rff_dim=32):
+        super(RFFRegression, self).__init__(n_dims, batch_size, pool_dict, seeds)
+
+        self.scale = scale
+        
+        self.rff_dim = rff_dim
+
+        if pool_dict is None and seeds is None:
+
+            self.w_b = torch.randn(self.b_size, self.rff_dim, 1)
+
+            self.w_rff = torch.randn(self.b_size, self.rff_dim, self.n_dims)
+
+            self.b_rff = 2 * math.pi * torch.rand(self.b_size, self.rff_dim, 1)
+        
+        elif seeds is not None:
+
+            self.w_b = torch.zeros(self.b_size, self.rff_dim, 1)
+
+            self.w_rff = torch.zeros(self.b_size, self.rff_dim, self.n_dims)
+
+            self.b_rff = torch.zeros(self.b_size, self.rff_dim, 1)
+            
+            generator = torch.Generator()
+            assert len(seeds) == self.b_size
+            for i, seed in enumerate(seeds):
+                generator.manual_seed(seed)
+                self.w_b[i] = torch.randn(self.rff_dim, 1, generator=generator)
+                
+                self.w_rff[i] = torch.randn(self.rff_dim, self.n_dims, generator=generator)
+
+                self.b_rff[i] = 2 * math.pi * torch.rand(self.rff_dim, 1, generator=generator)
+
+        else:
+            assert "w_b" in pool_dict and "w_rff" in pool_dict and "b_rff" in pool_dict
+            indices = torch.randperm(len(pool_dict["w_b"]))[:batch_size]
+            self.w_b = pool_dict["w_b"][indices]
+            self.w_rff = pool_dict["w_rff"][indices]
+            self.b_rff = pool_dict["b_rff"][indices]
+
+    def evaluate(self, xs_b):
+
+        w_b = self.w_b.to(xs_b.device)
+        w_rff = self.w_rff.to(xs_b.device)
+        b_rff = self.b_rff.to(xs_b.device)
+
+        phi_x = torch.cos(torch.einsum('bnd, brd->bnr', xs_b, w_rff) + b_rff.transpose(1, 2))
+        phi_x = torch.sqrt(torch.tensor(2 / self.rff_dim)) * phi_x
+
+        ys_b = self.scale * (phi_x @ w_b)[:, :, 0]
+
+        return ys_b
+
+    @staticmethod
+    def generate_pool_dict(n_dims, num_tasks, rff_dim, **kwargs):
+
+        return {
+            "w_b": torch.randn(num_tasks, rff_dim, 1),
+            "w_rff": torch.randn(num_tasks, rff_dim, n_dims),
+            "b_rff": 2 * math.pi * torch.rand(num_tasks, rff_dim, 1),
+        }
+
+    @staticmethod
+    def get_metric():
+        
+        return squared_error
+    
+    @staticmethod
+    def get_training_metric():
+        return mean_squared_error
 
 
 class LinearRegression(Task):

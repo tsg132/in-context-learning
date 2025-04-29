@@ -20,6 +20,7 @@ model_schema = {
     "n_embd": merge(tinteger, required),
     "n_layer": merge(tinteger, required),
     "n_head": merge(tinteger, required),
+    "rff_dim": merge(tinteger, required, default(256))
 }
 
 curriculum_base_schema = {
@@ -40,6 +41,7 @@ TASK_LIST = [
     "linear_classification",
     "relu_2nn_regression",
     "decision_tree",
+    "rff_regression"
 ]
 
 training_schema = {
@@ -55,6 +57,7 @@ training_schema = {
     "keep_every_steps": merge(tinteger, default(-1)),  # permanent checkpoints
     "resume_id": merge(tstring, nullable, default(None)),  # run uuid64
     "curriculum": stdict(curriculum_schema),
+    "rff_dim": merge(tinteger, default(256))
 }
 
 wandb_schema = {

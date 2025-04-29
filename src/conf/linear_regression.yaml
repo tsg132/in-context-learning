@@ -8,7 +8,7 @@ training:
             start: 11
             end: 41
             inc: 2
-            interval: 2000
+            interval: 250
 
 out_dir: ../models/linear_regression
 
