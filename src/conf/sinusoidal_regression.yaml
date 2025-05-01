@@ -5,7 +5,6 @@ training:
     task: sinusoidal_regression
     task_kwargs:
         scale: 1.0
-        x_range: 5.0
         freq_min: 0.5
         freq_max: 2.0
     data: uniform

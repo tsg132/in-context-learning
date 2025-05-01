@@ -61,7 +61,7 @@ def get_task_sampler(
         "relu_2nn_regression": Relu2nnRegression,
         "decision_tree": DecisionTree,
         "rff_regression": RFFRegression,
-        "sinusoidal": SinusoidalRegression,
+        "sinusoidal_regression": SinusoidalRegression,
         "rff_fixed": RFFRegressionFixed
     }
     if task_name in task_names_to_classes:

@@ -51,11 +51,9 @@ def train(model, args):
 
     n_dims = model.n_dims
     bsize = args.training.batch_size
-    data_sampler = get_data_sampler(
-        args.training.data, 
-        n_dims=n_dims,
-        **args.training.task_kwargs  # Pass task_kwargs to data_sampler too
-    )
+    
+    # Use default params for data sampler
+    data_sampler = get_data_sampler(args.training.data, n_dims=n_dims)
 
     task_kwargs = dict(args.training.task_kwargs)
 
