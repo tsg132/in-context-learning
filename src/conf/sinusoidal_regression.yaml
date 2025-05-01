@@ -1,0 +1,22 @@
+inherit:
+    - base.yaml
+
+training:
+    task: sinusoidal_regression
+    task_kwargs:
+        scale: 1.0
+        x_range: 5.0
+        freq_min: 0.5
+        freq_max: 2.0
+    data: uniform
+    curriculum:
+        points:
+            start: 11
+            end: 41
+            inc: 2
+            interval: 250
+
+out_dir: ../models/sinusoidal_regression
+
+wandb:
+    name: "sinusoidal_regression_standard" 

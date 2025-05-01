@@ -20,7 +20,7 @@ model_schema = {
     "n_embd": merge(tinteger, required),
     "n_layer": merge(tinteger, required),
     "n_head": merge(tinteger, required),
-    "rff_dim": merge(tinteger, required, default(256))
+    "rff_dim": merge(tinteger, required, default(32))
 }
 
 curriculum_base_schema = {
@@ -41,7 +41,9 @@ TASK_LIST = [
     "linear_classification",
     "relu_2nn_regression",
     "decision_tree",
-    "rff_regression"
+    "rff_regression",
+    "sinusoidal_regression",
+    "rff_fixed"
 ]
 
 training_schema = {
@@ -49,7 +51,7 @@ training_schema = {
     "task_kwargs": merge(tdict, required),
     "num_tasks": merge(tinteger, nullable, default(None)),
     "num_training_examples": merge(tinteger, nullable, default(None)),
-    "data": merge(tstring, allowed(["gaussian"])),
+    "data": merge(tstring, allowed(["gaussian", "uniform"])),
     "batch_size": merge(tinteger, default(64)),
     "learning_rate": merge(tfloat, default(3e-4)),
     "train_steps": merge(tinteger, default(1000)),
@@ -57,7 +59,7 @@ training_schema = {
     "keep_every_steps": merge(tinteger, default(-1)),  # permanent checkpoints
     "resume_id": merge(tstring, nullable, default(None)),  # run uuid64
     "curriculum": stdict(curriculum_schema),
-    "rff_dim": merge(tinteger, default(256))
+    "rff_dim": merge(tinteger, default(32))
 }
 
 wandb_schema = {

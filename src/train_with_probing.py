@@ -1,8 +1,12 @@
 import os
 from random import randint
+import torch.nn as nn
+
+from torch.utils.data import DataLoader
 import uuid
 
 from quinine import QuinineArgumentParser
+from probe_dataset import get_probe_dataset
 from tqdm import tqdm
 import torch
 import yaml
@@ -17,6 +21,18 @@ from models import build_model
 import wandb
 
 torch.backends.cudnn.benchmark = True
+
+
+def freeze_layers_except_last(model):
+    """Freezes all layers except the last layer(s) for linear probing."""
+    for name, param in model.named_parameters():
+        if 'head' not in name and 'final' not in name and 'output' not in name:  # Common names for final layers
+            param.requires_grad = False
+    
+    # Log number of trainable parameters
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params:.2%} of total)")
 
 
 def train_step(model, xs, ys, optimizer, loss_func):
@@ -35,8 +51,18 @@ def sample_seeds(total_seeds, count):
     return seeds
 
 
-def train(model, args):
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.training.learning_rate)
+def train(model, args, probe):
+
+    probe_head, probe_opt, probe_loss_fn, probe_loader = probe
+    # If linear probing is enabled, freeze all layers except the last
+    if args.training.get('linear_probe', False):
+        print("Enabling linear probing - freezing all layers except last...")
+        freeze_layers_except_last(model)
+        
+    optimizer = torch.optim.Adam(
+        [p for p in model.parameters() if p.requires_grad],  # Only optimize unfrozen parameters
+        lr=args.training.learning_rate
+    )
     curriculum = Curriculum(args.training.curriculum)
 
     starting_step = 0
@@ -51,15 +77,11 @@ def train(model, args):
 
     n_dims = model.n_dims
     bsize = args.training.batch_size
-    data_sampler = get_data_sampler(
-        args.training.data, 
-        n_dims=n_dims,
-        **args.training.task_kwargs  # Pass task_kwargs to data_sampler too
-    )
+    data_sampler = get_data_sampler(args.training.data, n_dims=n_dims)
 
     task_kwargs = dict(args.training.task_kwargs)
 
-    if args.training.task == "rff_fixed":
+    if args.training.task == "rff_regression_fixed":
 
         from tasks import RFFRegressionFixed
 
@@ -78,6 +100,7 @@ def train(model, args):
 
         **task_kwargs
     )
+
     # task_sampler = get_task_sampler(
     #     args.training.task,
     #     n_dims,
@@ -113,6 +136,30 @@ def train(model, args):
         loss_func = task.get_training_metric()
 
         loss, output = train_step(model, xs.cuda(), ys.cuda(), optimizer, loss_func)
+
+        if probe_head is not None and i % args.probe.log_every_steps == 0:
+            xb, yb = next(iter(probe_loader))
+
+            xb, yb = xb.cuda(), yb.cuda()
+            with torch.no_grad():
+                feats = model.extract_features(xb)
+
+            logits = probe_head(feats)
+
+            p_loss = probe_loss_fn(logits, yb)
+
+            probe_opt.zero_grad()
+
+            p_loss.backward()
+
+            probe_opt.step()
+
+            acc = (logits.argmax(-1) == yb).float().mean().item()
+
+            wandb.log({
+                "probe/loss": p_loss.item(),
+                "probe/acc": acc,
+            }, step=i)
 
         point_wise_tags = list(range(curriculum.n_points))
         point_wise_loss_func = task.get_metric()
@@ -178,10 +225,44 @@ def main(args):
         )
 
     model = build_model(args.model)
+    
+    # Load pretrained weights if specified
+    if args.model.get('pretrained_path', None):
+        print(f"Loading pretrained weights from {args.model.pretrained_path}")
+        state_dict = torch.load(args.model.pretrained_path)
+        # Handle both cases where state_dict is direct or nested in 'model_state_dict'
+        if 'model_state_dict' in state_dict:
+            state_dict = state_dict['model_state_dict']
+        model.load_state_dict(state_dict, strict=False)
+        
     model.cuda()
     model.train()
 
-    train(model, args)
+    if getattr(args, "probe", None):
+
+        for p in model.parameters():
+
+            p.requires_grad = False
+
+        probe_head = nn.Linear(model.n_dims, args.probe.num_classes).cuda()
+
+        probe_head.train()
+
+        probe_opt = torch.optim.Adam(probe_head.parameters(), lr=args.probe.lr)
+
+        # probe_loss_fn = nn.CrossEntropyLoss()
+
+        probe_loss_fn = nn.MSELoss()
+
+        probe_dataset = get_probe_dataset(args.probe.dataset)
+
+        probe_loader = DataLoader(probe_dataset, batch_size=args.probe.batch_size, shuffle=True)
+
+    else:
+
+        probe_head = probe_opt = probe_loss_fn = probe_loader = None
+
+    train(model, args, (probe_head, probe_opt, probe_loss_fn, probe_loader))
 
     if not args.test_run:
         _ = get_run_metrics(args.out_dir)  # precompute metrics for eval

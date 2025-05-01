@@ -20,3 +20,7 @@ training:
             end: 10
             inc: 1
             interval: 250
+
+wandb:
+    entity: "cs182-final-project"
+    project: "Sinusoidal-ICL"

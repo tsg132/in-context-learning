@@ -61,6 +61,8 @@ def get_task_sampler(
         "relu_2nn_regression": Relu2nnRegression,
         "decision_tree": DecisionTree,
         "rff_regression": RFFRegression,
+        "sinusoidal": SinusoidalRegression,
+        "rff_fixed": RFFRegressionFixed
     }
     if task_name in task_names_to_classes:
         task_cls = task_names_to_classes[task_name]
@@ -74,6 +76,94 @@ def get_task_sampler(
         raise NotImplementedError
 
 
+class RFFRegressionFixed(Task):
+
+    """
+    RFF regression with a single fixed kernel sampled at initialization. At each call 
+    to evaluate, we sample a new weight vector per example.
+    """
+
+    def __init__(self, n_dims, batch_size, pool_dict=None, seeds=None, scale=1.0, rff_dim=32):
+
+        super(RFFRegressionFixed, self).__init__(n_dims, batch_size, pool_dict, seeds)
+
+        self.scale = scale
+
+        self.rff_dim = rff_dim
+
+        self.seeds = seeds
+
+        if pool_dict is not None:
+
+            self.w_rff = pool_dict['w_rff'].clone()
+
+            self.b_rff = pool_dict['b_rff'].clone()
+
+        else:
+            if seeds is not None:
+
+                gen_k = torch.Generator().manual_seed(seeds[0] if isinstance(seeds, (list, tuple)) else seeds)
+
+                self.w_rff = torch.randn(self.rff_dim, self.n_dims, generator=gen_k)
+
+                self.b_rff = 2 * math.pi * torch.rand(self.rff_dim, generator=gen_k)
+
+            else:
+
+                self.w_rff = torch.randn(self.rff_dim, self.n_dims)
+
+                self.b_rff = 2 * math.pi * torch.rand(self.rff_dim)
+
+    def evaluate(self, xs_b):
+        device = xs_b.device
+
+        w_rff = self.w_rff.to(device)
+        b_rff = self.b_rff.to(device)
+
+        phi_x = torch.cos(torch.einsum('bnd, rd->bnr', xs_b, w_rff) + b_rff)
+
+        phi_x = math.sqrt(2 / self.rff_dim) * phi_x
+
+        b_size = self.batch_size
+
+        if self.seeds is not None:
+
+            w_b = torch.zeros(b_size, self.rff_dim, 1, device=device)
+
+            for i, seed in enumerate(self.seeds):
+
+                gen_i = torch.Generator().manual_seed(seed)
+
+                w_b[i] = torch.randn(self.rff_dim, 1, generator=gen_i, device=device)
+
+        else:
+
+            w_b = torch.randn(b_size, self.rff_dim, 1, device=device)
+
+        ys_b = self.scale * (phi_x @ w_b).squeeze(-1)
+
+        return ys_b
+        
+    @staticmethod
+    def generate_pool_dict(n_dims, num_tasks, rff_dim=32, **kwargs):
+
+        return {"w_rff": torch.randn(rff_dim, n_dims), "b_rff": 2 * math.pi * torch.rand(rff_dim)}
+    
+    @staticmethod
+    def get_metric():
+
+        return squared_error
+    
+    @staticmethod
+    def get_training_metric():
+
+        return mean_squared_error
+        
+        
+
+
+
+    
 class RFFRegression(Task):
     
     def __init__(self, n_dims, batch_size, pool_dict=None, seeds=None, scale=1, rff_dim=32):
@@ -409,6 +499,68 @@ class DecisionTree(Task):
     @staticmethod
     def generate_pool_dict(n_dims, num_tasks, hidden_layer_size=4, **kwargs):
         raise NotImplementedError
+
+    @staticmethod
+    def get_metric():
+        return squared_error
+
+    @staticmethod
+    def get_training_metric():
+        return mean_squared_error
+
+
+class SinusoidalRegression(Task):
+    def __init__(self, n_dims, batch_size, pool_dict=None, seeds=None, scale=1.0, x_range=5.0, freq_min=0.5, freq_max=2.0):
+        super(SinusoidalRegression, self).__init__(n_dims, batch_size, pool_dict, seeds)
+        self.scale = scale
+        self.x_range = x_range
+        self.freq_min = freq_min
+        self.freq_max = freq_max
+
+        if pool_dict is None and seeds is None:
+            # Sample parameters for each batch
+            self.amplitude = torch.empty(self.b_size).uniform_(0.5, 1.5) * scale
+            self.frequency = torch.empty(self.b_size).uniform_(freq_min, freq_max)
+            self.phase = torch.empty(self.b_size).uniform_(0, 2 * math.pi)
+        elif seeds is not None:
+            # Create parameters deterministically for each batch element
+            self.amplitude = torch.zeros(self.b_size)
+            self.frequency = torch.zeros(self.b_size)
+            self.phase = torch.zeros(self.b_size)
+            
+            generator = torch.Generator()
+            assert len(seeds) == self.b_size
+            for i, seed in enumerate(seeds):
+                generator.manual_seed(seed)
+                self.amplitude[i] = torch.empty(1, generator=generator).uniform_(0.5, 1.5) * scale
+                self.frequency[i] = torch.empty(1, generator=generator).uniform_(freq_min, freq_max)
+                self.phase[i] = torch.empty(1, generator=generator).uniform_(0, 2 * math.pi)
+        else:
+            assert "amplitude" in pool_dict and "frequency" in pool_dict and "phase" in pool_dict
+            indices = torch.randperm(len(pool_dict["amplitude"]))[:batch_size]
+            self.amplitude = pool_dict["amplitude"][indices]
+            self.frequency = pool_dict["frequency"][indices]
+            self.phase = pool_dict["phase"][indices]
+
+    def evaluate(self, xs_b):
+        # Use just the first dimension if input is multi-dimensional
+        x = xs_b[:, :, 0]  # Shape: [batch_size, n_points]
+        
+        # Move parameters to device and reshape for broadcasting
+        amplitude = self.amplitude.to(xs_b.device).unsqueeze(1)  # Shape: [batch_size, 1]
+        frequency = self.frequency.to(xs_b.device).unsqueeze(1)  # Shape: [batch_size, 1]
+        phase = self.phase.to(xs_b.device).unsqueeze(1)  # Shape: [batch_size, 1]
+        
+        # Calculate sin(ωx + φ)
+        return amplitude * torch.sin(frequency * x + phase)
+
+    @staticmethod
+    def generate_pool_dict(n_dims, num_tasks, scale=1.0, freq_min=0.5, freq_max=2.0, **kwargs):
+        return {
+            "amplitude": torch.empty(num_tasks).uniform_(0.5, 1.5) * scale,
+            "frequency": torch.empty(num_tasks).uniform_(freq_min, freq_max),
+            "phase": torch.empty(num_tasks).uniform_(0, 2 * math.pi)
+        }
 
     @staticmethod
     def get_metric():
