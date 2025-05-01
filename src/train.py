@@ -5,7 +5,11 @@ import uuid
 from quinine import QuinineArgumentParser
 from tqdm import tqdm
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import yaml
+import wandb
+import numpy as np
 
 from eval import get_run_metrics
 from tasks import get_task_sampler
@@ -17,6 +21,12 @@ from models import build_model
 import wandb
 
 torch.backends.cudnn.benchmark = True
+
+print("CUDA available:", torch.cuda.is_available())
+print("Current device:", torch.cuda.current_device() if torch.cuda.is_available() else "CPU")
+print("Device count:", torch.cuda.device_count() if torch.cuda.is_available() else 0)
+if torch.cuda.is_available():
+    print("Device name:", torch.cuda.get_device_name(0))
 
 
 def train_step(model, xs, ys, optimizer, loss_func):
