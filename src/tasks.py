@@ -510,22 +510,31 @@ class DecisionTree(Task):
 
 
 class SinusoidalRegression(Task):
-    def __init__(self, n_dims, batch_size, pool_dict=None, seeds=None, scale=1.0, x_range=5.0, freq_min=0.5, freq_max=2.0):
+    """Multi-dimensional sinusoidal regression task.
+    
+    Learns functions of the form y = A * sin(x·ω + φ) where:
+    - x is multi-dimensional input
+    - ω is a frequency vector (one per dimension)
+    - · denotes dot product
+    - A is amplitude scalar
+    - φ is phase scalar
+    """
+    def __init__(self, n_dims, batch_size, pool_dict=None, seeds=None, scale=1.0, freq_min=0.5, freq_max=2.0):
         super(SinusoidalRegression, self).__init__(n_dims, batch_size, pool_dict, seeds)
         self.scale = scale
-        self.x_range = x_range
         self.freq_min = freq_min
         self.freq_max = freq_max
 
         if pool_dict is None and seeds is None:
             # Sample parameters for each batch
             self.amplitude = torch.empty(self.b_size).uniform_(0.5, 1.5) * scale
-            self.frequency = torch.empty(self.b_size).uniform_(freq_min, freq_max)
+            # Each dimension gets its own frequency component
+            self.frequency = torch.empty(self.b_size, self.n_dims).uniform_(freq_min, freq_max)
             self.phase = torch.empty(self.b_size).uniform_(0, 2 * math.pi)
         elif seeds is not None:
             # Create parameters deterministically for each batch element
             self.amplitude = torch.zeros(self.b_size)
-            self.frequency = torch.zeros(self.b_size)
+            self.frequency = torch.zeros(self.b_size, self.n_dims)
             self.phase = torch.zeros(self.b_size)
             
             generator = torch.Generator()
@@ -533,7 +542,7 @@ class SinusoidalRegression(Task):
             for i, seed in enumerate(seeds):
                 generator.manual_seed(seed)
                 self.amplitude[i] = torch.empty(1, generator=generator).uniform_(0.5, 1.5) * scale
-                self.frequency[i] = torch.empty(1, generator=generator).uniform_(freq_min, freq_max)
+                self.frequency[i] = torch.empty(self.n_dims, generator=generator).uniform_(freq_min, freq_max)
                 self.phase[i] = torch.empty(1, generator=generator).uniform_(0, 2 * math.pi)
         else:
             assert "amplitude" in pool_dict and "frequency" in pool_dict and "phase" in pool_dict
@@ -543,22 +552,34 @@ class SinusoidalRegression(Task):
             self.phase = pool_dict["phase"][indices]
 
     def evaluate(self, xs_b):
-        # Use just the first dimension if input is multi-dimensional
-        x = xs_b[:, :, 0]  # Shape: [batch_size, n_points]
-        
-        # Move parameters to device and reshape for broadcasting
+        """
+        Computes y = A * sin(x·ω + φ) where:
+        - x·ω is the dot product between input and frequency vectors
+        """
+        # Move parameters to device
         amplitude = self.amplitude.to(xs_b.device).unsqueeze(1)  # Shape: [batch_size, 1]
-        frequency = self.frequency.to(xs_b.device).unsqueeze(1)  # Shape: [batch_size, 1]
+        frequency = self.frequency.to(xs_b.device)  # Shape: [batch_size, n_dims]
         phase = self.phase.to(xs_b.device).unsqueeze(1)  # Shape: [batch_size, 1]
         
-        # Calculate sin(ωx + φ)
-        return amplitude * torch.sin(frequency * x + phase)
+        # Compute dot product between input and frequency vectors
+        # xs_b has shape [batch_size, n_points, n_dims]
+        # frequency has shape [batch_size, n_dims]
+        # We need to compute the dot product for each point
+        
+        # Reshape frequency for broadcasting: [batch_size, 1, n_dims]
+        frequency = frequency.unsqueeze(1)
+        
+        # Compute dot product: [batch_size, n_points]
+        dot_product = torch.sum(xs_b * frequency, dim=2)
+        
+        # Calculate sin(x·ω + φ)
+        return amplitude * torch.sin(dot_product + phase)
 
     @staticmethod
     def generate_pool_dict(n_dims, num_tasks, scale=1.0, freq_min=0.5, freq_max=2.0, **kwargs):
         return {
             "amplitude": torch.empty(num_tasks).uniform_(0.5, 1.5) * scale,
-            "frequency": torch.empty(num_tasks).uniform_(freq_min, freq_max),
+            "frequency": torch.empty(num_tasks, n_dims).uniform_(freq_min, freq_max),
             "phase": torch.empty(num_tasks).uniform_(0, 2 * math.pi)
         }
 
