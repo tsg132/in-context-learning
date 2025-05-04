@@ -60,9 +60,12 @@ def get_task_sampler(
         "quadratic_regression": QuadraticRegression,
         "relu_2nn_regression": Relu2nnRegression,
         "decision_tree": DecisionTree,
+        
         "rff_regression": RFFRegression,
         "sinusoidal_regression": SinusoidalRegression,
-        "rff_fixed": RFFRegressionFixed
+        "rff_fixed": RFFRegressionFixed,
+        "sinusoidal_regression_1d": SinusoidalRegression,
+        "sinusoidal_regression_10d": SinusoidalRegression,
     }
     if task_name in task_names_to_classes:
         task_cls = task_names_to_classes[task_name]
@@ -83,7 +86,7 @@ class RFFRegressionFixed(Task):
     to evaluate, we sample a new weight vector per example.
     """
 
-    def __init__(self, n_dims, batch_size, pool_dict=None, seeds=None, scale=1.0, rff_dim=32):
+    def __init__(self, n_dims, batch_size, pool_dict=None, seeds=None, scale=1.0, rff_dim=16):
 
         super(RFFRegressionFixed, self).__init__(n_dims, batch_size, pool_dict, seeds)
 
@@ -92,6 +95,8 @@ class RFFRegressionFixed(Task):
         self.rff_dim = rff_dim
 
         self.seeds = seeds
+
+        self.batch_size = batch_size
 
         if pool_dict is not None:
 
@@ -590,3 +595,112 @@ class SinusoidalRegression(Task):
     @staticmethod
     def get_training_metric():
         return mean_squared_error
+
+
+class FourierFitBaseline:
+    """
+    Baseline: fits y = c0 + sum_{j=1}^n_dims sum_{k=1}^n_harmonics [a_{j,k} cos(k x_j) + b_{j,k} sin(k x_j)]
+    to the data using least squares.
+    """
+    def __init__(self, n_dims, n_harmonics=3):
+        self.n_dims = n_dims
+        self.n_harmonics = n_harmonics
+        self.coefs = None
+        self.name = f"fourier_fit_n_dims={n_dims}_n_harmonics={n_harmonics}"
+
+    def _fourier_features(self, xs):
+        # xs: [N, n_dims] or [n_dims]
+        # Ensure xs has the right shape for processing
+        if xs.dim() == 1:
+            # Single example: [n_dims] -> [1, n_dims]
+            xs = xs.unsqueeze(0)
+        
+        feats = [torch.ones(xs.shape[0], 1, device=xs.device)]
+        for j in range(self.n_dims):
+            for k in range(1, self.n_harmonics + 1):
+                feats.append(torch.sin(k * xs[:, j:j+1]))
+                feats.append(torch.cos(k * xs[:, j:j+1]))
+        return torch.cat(feats, dim=1)  # [N, 1 + 2*n_harmonics*n_dims]
+
+    def fit(self, xs, ys):
+        # xs: [N, n_dims], ys: [N]
+        X = self._fourier_features(xs)
+        # Use torch.linalg.lstsq for modern PyTorch
+        self.coefs = torch.linalg.lstsq(X, ys.unsqueeze(1)).solution.squeeze(1)
+
+    def predict(self, xs):
+        X = self._fourier_features(xs)
+        return X @ self.coefs
+        
+    def __call__(self, xs, ys, inds=None):
+        """
+        In-context learning style prediction. For each index i in inds:
+        1. Fit the Fourier model on the first i points
+        2. Predict for the i-th point
+        """
+        if inds is None:
+            inds = range(ys.shape[1])
+        else:
+            if max(inds) >= ys.shape[1] or min(inds) < 0:
+                raise ValueError("inds contain indices where xs and ys are not defined")
+        
+        preds = []
+        
+        for i in inds:
+            if i == 0:
+                preds.append(torch.zeros_like(ys[:, 0])) # predict zero for first point
+                continue
+                
+            batch_preds = []
+            # Process each batch element individually
+            for b in range(xs.shape[0]):
+                # Fit model on points seen so far
+                train_xs, train_ys = xs[b, :i], ys[b, :i]
+                self.fit(train_xs, train_ys)
+                
+                # Predict for the current point
+                test_x = xs[b, i]  # Get the actual point, not a slice
+                pred = self.predict(test_x)
+                batch_preds.append(pred.item() if isinstance(pred, torch.Tensor) else pred)
+                
+            preds.append(torch.tensor(batch_preds, device=xs.device))
+            
+        return torch.stack(preds, dim=1)
+
+
+class KernelRidgeFixedBaseline:
+    """
+    Baseline: Kernel Ridge Regression using a fixed RFF kernel (w_rff, b_rff).
+    Fits the optimal linear weights for the given kernel.
+    """
+    def __init__(self, w_rff, b_rff, alpha=1e-6):
+        self.w_rff = w_rff  # [rff_dim, n_dims]
+        self.b_rff = b_rff  # [rff_dim]
+        self.alpha = alpha
+        self.coefs = None
+
+    def _rff_features(self, xs):
+        # xs: [N, n_dims]
+        # w_rff: [rff_dim, n_dims], b_rff: [rff_dim]
+        # Output: [N, rff_dim]
+        device = xs.device
+        w_rff = self.w_rff.to(device)
+        b_rff = self.b_rff.to(device)
+        # [N, rff_dim]
+        phi_x = torch.cos(xs @ w_rff.t() + b_rff)
+        phi_x = math.sqrt(2.0 / w_rff.shape[0]) * phi_x
+        return phi_x
+
+    def fit(self, xs, ys):
+        # xs: [N, n_dims], ys: [N]
+        X = self._rff_features(xs)
+        # Kernel ridge regression: (X^T X + alpha I)^{-1} X^T y
+        n_feat = X.shape[1]
+        reg = self.alpha * torch.eye(n_feat, device=X.device)
+        XtX = X.t() @ X
+        XtY = X.t() @ ys.unsqueeze(1)
+        self.coefs = torch.linalg.solve(XtX + reg, XtY).squeeze(1)
+
+    def predict(self, xs):
+        X = self._rff_features(xs)
+        return X @ self.coefs

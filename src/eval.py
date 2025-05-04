@@ -11,7 +11,7 @@ import yaml
 
 import models
 from samplers import get_data_sampler, sample_transformation
-from tasks import get_task_sampler
+from tasks import get_task_sampler, FourierFitBaseline, KernelRidgeFixedBaseline
 
 
 def get_model_from_run(run_path, step=-1, only_conf=False):
@@ -388,6 +388,44 @@ def read_run_dir(run_dir):
     df = pd.DataFrame(all_runs).sort_values("run_name")
     assert len(df) == len(df.run_name.unique())
     return df
+
+
+def eval_fourier_fit(xs_train, ys_train, xs_test, ys_test, n_harmonics=3):
+    """
+    Fit FourierFitBaseline on (xs_train, ys_train), predict on xs_test, return MSE.
+    """
+    n_dims = xs_train.shape[1]
+    baseline = FourierFitBaseline(n_dims=n_dims, n_harmonics=n_harmonics)
+    baseline.fit(xs_train, ys_train)
+    preds = baseline.predict(xs_test)
+    mse = ((preds - ys_test) ** 2).mean().item()
+    return mse
+
+
+def eval_kernel_ridge_fixed(xs_train, ys_train, xs_test, ys_test, w_rff, b_rff, alpha=1e-6):
+    """
+    Fit KernelRidgeFixedBaseline on (xs_train, ys_train), predict on xs_test, return MSE.
+    """
+    baseline = KernelRidgeFixedBaseline(w_rff=w_rff, b_rff=b_rff, alpha=alpha)
+    baseline.fit(xs_train, ys_train)
+    preds = baseline.predict(xs_test)
+    mse = ((preds - ys_test) ** 2).mean().item()
+    return mse
+
+
+def get_relevant_baselines(task_name, n_dims, pool_dict=None):
+    baselines = []
+    if task_name == "sinusoidal_regression":
+        baselines.append(FourierFitBaseline(n_dims=n_dims, n_harmonics=3))
+    if task_name == "rff_fixed" and pool_dict is not None:
+        baselines.append(KernelRidgeFixedBaseline(
+            w_rff=pool_dict["w_rff"],
+            b_rff=pool_dict["b_rff"],
+            alpha=1e-6
+        ))
+    # ... add other baselines as needed ...
+    return baselines
+
 
 if __name__ == "__main__":
     run_dir = sys.argv[1]

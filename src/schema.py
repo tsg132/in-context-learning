@@ -20,7 +20,7 @@ model_schema = {
     "n_embd": merge(tinteger, required),
     "n_layer": merge(tinteger, required),
     "n_head": merge(tinteger, required),
-    "rff_dim": merge(tinteger, required, default(32))
+    "rff_dim": merge(tinteger, required, default(16))
 }
 
 curriculum_base_schema = {
@@ -46,6 +46,18 @@ TASK_LIST = [
     "rff_fixed"
 ]
 
+probing_schema = {
+    "enabled":          merge(tboolean, default(False)),
+    "output_dim":       merge(tinteger, default(1)),
+    "lr":               merge(tfloat,   default(1e-3)),
+    "probe_batch_size": merge(tinteger, default(32)),
+    "probe_epochs":     merge(tinteger, default(1)),
+    "probe_every_steps":merge(tinteger, default(1000)),
+    "task":             merge(tstring,  allowed(TASK_LIST)),
+    "task_kwargs":      merge(tdict,    default({})),
+}
+
+
 training_schema = {
     "task": merge(tstring, allowed(TASK_LIST)),
     "task_kwargs": merge(tdict, required),
@@ -59,7 +71,7 @@ training_schema = {
     "keep_every_steps": merge(tinteger, default(-1)),  # permanent checkpoints
     "resume_id": merge(tstring, nullable, default(None)),  # run uuid64
     "curriculum": stdict(curriculum_schema),
-    "rff_dim": merge(tinteger, default(32))
+    "rff_dim": merge(tinteger, default(16))
 }
 
 wandb_schema = {
@@ -75,5 +87,6 @@ schema = {
     "model": stdict(model_schema),
     "training": stdict(training_schema),
     "wandb": stdict(wandb_schema),
+    "probing": stdict(probing_schema),
     "test_run": merge(tboolean, default(False)),
 }

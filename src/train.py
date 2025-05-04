@@ -75,6 +75,10 @@ def train(model, args):
 
         task_kwargs["pool_dict"] = fixed_pool
 
+        # Save the fixed_pool to disk for later evaluation
+        pool_path = os.path.join(args.out_dir, "fixed_pool.pt")
+        torch.save(fixed_pool, pool_path)
+
     task_sampler = get_task_sampler(
 
         args.training.task,
@@ -86,6 +90,41 @@ def train(model, args):
 
         **task_kwargs
     )
+
+    if args.probing.enabled and not args.test_run:
+
+        probe_kwargs = dict(args.training.task_kwargs)
+
+        if args.training.task == "rff_fixed":
+
+            probe_kwargs["pool_dict"] = fixed_pool
+
+            probe_num_tasks = None
+
+        else:
+
+            probe_num_tasks = args.training.num_tasks
+
+        probe_sampler = get_task_sampler(
+            args.training.task,
+            n_dims,
+            args.probing.probe_batch_size,
+
+            num_tasks=probe_num_tasks,
+            **probe_kwargs
+        )
+
+        probe_head = nn.Linear(model.feature_dim, args.probing.output_dim).cuda()
+
+        probe_optimizer = torch.optim.Adam(
+            probe_head.parameters(),
+            lr=args.probing.lr
+        )
+
+        probe_loss_fn = nn.MSELoss()
+    else:
+
+        probe_sampler = probe_head = probe_optimizer = probe_loss_fn = None
     # task_sampler = get_task_sampler(
     #     args.training.task,
     #     n_dims,
@@ -93,11 +132,110 @@ def train(model, args):
     #     num_tasks=args.training.num_tasks,
     #     **args.training.task_kwargs,
     # )
+
+    # def run_probe():
+
+    #     model.eval(); probe_head.train()
+
+    #     for p in model.parameters(): p.requires_grad = False
+
+    #     total = 0.0
+
+    #     for _ in range(args.probing.probe_epochs):
+
+    #         xs_p = data_sampler.sample_xs(
+    #             curriculum.n_points,
+    #             args.probing.probe_batch_size,
+
+    #             curriculum.n_dims_truncated
+    #         ).cuda()
+
+    #         task_p = probe_sampler()
+
+    #         ys_p = task_p.evaluate(xs_p).cuda()
+
+    #         feats = model(xs_p, ys_p, return_features=True)
+
+    #         preds = probe_heead(feats).squeeze(-1)
+
+    #         loss = probe_loss_fn(preds, ys_p)
+
+    #         probe_optimizer.zero_grad()
+
+    #         loss.backward()
+
+    #         total += loss.item()
+
+    #     for p in model.parameters(): p.requires_grad = True
+
+    #     model.train()
+
+    #     return total / args.probing.probe_epochs
+    def run_probe(step):
+        model.eval()
+        probe_head.train()
+
+        # freeze the main model
+        for p in model.parameters():
+            p.requires_grad = False
+
+        total_loss = 0.0
+        last_feats = None
+
+        for _ in range(args.probing.probe_epochs):
+            xs_p = data_sampler.sample_xs(
+                curriculum.n_points,
+                args.probing.probe_batch_size,
+                curriculum.n_dims_truncated
+            ).cuda()
+            task_p = probe_sampler()
+            ys_p = task_p.evaluate(xs_p).cuda()
+
+            feats = model(xs_p, ys_p, return_features=True)  # [B, P, D]
+            last_feats = feats  # stash for projector
+
+            preds = probe_head(feats).squeeze(-1)             # [B, P]
+            loss  = probe_loss_fn(preds, ys_p)
+
+            probe_optimizer.zero_grad()
+            loss.backward()
+            probe_optimizer.step()
+
+            total_loss += loss.item()
+
+        # prepare embeddings for W&B projector
+        # flatten features to [num_points, feat_dim]
+        feats_flat = last_feats.view(-1, model.feature_dim).cpu().numpy()
+        # column names for each dimension
+        columns = [f"feat_{j}" for j in range(feats_flat.shape[1])]
+        # build a wandb Table
+        table = wandb.Table(data=feats_flat.tolist(), columns=columns)
+        # add an index column for color/metadata
+        table.add_column("index", list(range(feats_flat.shape[0])))
+        # log embedding projector (first two dims on x/y)
+        # proj = wandb.plot.embedding(
+        #     table,
+        #     columns[0],      # x-axis
+        #     columns[1],      # y-axis
+        #     "index"         # color by index
+        # )
+        wandb.log({"probe_embeddings": table}, step=step)
+
+        # unfreeze model
+        for p in model.parameters():
+            p.requires_grad = True
+        model.train()
+
+        return total_loss / args.probing.probe_epochs
+
+
     pbar = tqdm(range(starting_step, args.training.train_steps))
 
     num_training_examples = args.training.num_training_examples
 
     for i in pbar:
+
+
         data_sampler_args = {}
         task_sampler_args = {}
 
@@ -155,9 +293,16 @@ def train(model, args):
             training_state = {
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "probe_head_state_dict": probe_head.state_dict(),
+                "probe_optimizer_state_dict": probe_optimizer.state_dict(),
                 "train_step": i,
             }
             torch.save(training_state, state_path)
+
+        if args.probing.enabled and not args.test_run and i % args.probing.probe_every_steps == 0:
+            probe_loss = run_probe(i)
+
+            wandb.log({"probe_loss": probe_loss}, step=i)
 
         if (
             args.training.keep_every_steps > 0

@@ -8,6 +8,8 @@ import warnings
 from sklearn import tree
 import xgboost as xgb
 
+from tasks import FourierFitBaseline
+
 from base_models import NeuralNetwork, ParallelNetworks
 
 
@@ -71,15 +73,85 @@ def get_relevant_baselines(task_name):
             (XGBoostModel, {}),
             (AveragingModel, {}),
         ],
+        "sinusoidal_regression_1d": [
+            (FourierFitBaseline, {"n_dims": 1}),
+            (NNModel, {"n_neighbors": 3}),
+            (DecisionTreeModel, {"max_depth": 4}),
+            (DecisionTreeModel, {"max_depth": None}),
+            (XGBoostModel, {}),
+            (AveragingModel, {}),
+        ],
+        "sinusoidal_regression_10d": [
+            (FourierFitBaseline, {"n_dims": 10}),
+            (NNModel, {"n_neighbors": 3}),
+            (DecisionTreeModel, {"max_depth": 4}),
+            (DecisionTreeModel, {"max_depth": None}),
+            (XGBoostModel, {}),
+            (AveragingModel, {}),
+        ],
     }
 
     models = [model_cls(**kwargs) for model_cls, kwargs in task_to_baselines[task_name]]
     return models
 
 
+# class TransformerModel(nn.Module):
+#     def __init__(self, n_dims, n_positions, n_embd=128, n_layer=12, n_head=4):
+#         super(TransformerModel, self).__init__()
+#         configuration = GPT2Config(
+#             n_positions=2 * n_positions,
+#             n_embd=n_embd,
+#             n_layer=n_layer,
+#             n_head=n_head,
+#             resid_pdrop=0.0,
+#             embd_pdrop=0.0,
+#             attn_pdrop=0.0,
+#             use_cache=False,
+#         )
+#         self.name = f"gpt2_embd={n_embd}_layer={n_layer}_head={n_head}"
+
+#         self.n_positions = n_positions
+#         self.n_dims = n_dims
+#         self._read_in = nn.Linear(n_dims, n_embd)
+#         self._backbone = GPT2Model(configuration)
+#         self._read_out = nn.Linear(n_embd, 1)
+
+#     @staticmethod
+#     def _combine(xs_b, ys_b):
+#         """Interleaves the x's and the y's into a single sequence."""
+#         bsize, points, dim = xs_b.shape
+#         ys_b_wide = torch.cat(
+#             (
+#                 ys_b.view(bsize, points, 1),
+#                 torch.zeros(bsize, points, dim - 1, device=ys_b.device),
+#             ),
+#             axis=2,
+#         )
+#         zs = torch.stack((xs_b, ys_b_wide), dim=2)
+#         zs = zs.view(bsize, 2 * points, dim)
+#         return zs
+
+#     def forward(self, xs, ys, inds=None):
+#         if inds is None:
+#             inds = torch.arange(ys.shape[1])
+#         else:
+#             inds = torch.tensor(inds)
+#             if max(inds) >= ys.shape[1] or min(inds) < 0:
+#                 raise ValueError("inds contain indices where xs and ys are not defined")
+#         zs = self._combine(xs, ys)
+#         embeds = self._read_in(zs)
+#         output = self._backbone(inputs_embeds=embeds).last_hidden_state
+#         prediction = self._read_out(output)
+#         return prediction[:, ::2, 0][:, inds]  # predict only on xs
+
+
+import torch
+import torch.nn as nn
+from transformers import GPT2Config, GPT2Model
+
 class TransformerModel(nn.Module):
     def __init__(self, n_dims, n_positions, n_embd=128, n_layer=12, n_head=4):
-        super(TransformerModel, self).__init__()
+        super().__init__()
         configuration = GPT2Config(
             n_positions=2 * n_positions,
             n_embd=n_embd,
@@ -91,41 +163,53 @@ class TransformerModel(nn.Module):
             use_cache=False,
         )
         self.name = f"gpt2_embd={n_embd}_layer={n_layer}_head={n_head}"
-
         self.n_positions = n_positions
-        self.n_dims = n_dims
-        self._read_in = nn.Linear(n_dims, n_embd)
-        self._backbone = GPT2Model(configuration)
-        self._read_out = nn.Linear(n_embd, 1)
+        self.n_dims      = n_dims
+        self.feature_dim = n_embd        # handy for "probe head" init
+
+        self._read_in   = nn.Linear(n_dims,    n_embd)
+        self._backbone  = GPT2Model(configuration)
+        self._read_out  = nn.Linear(n_embd,        1)
 
     @staticmethod
     def _combine(xs_b, ys_b):
-        """Interleaves the x's and the y's into a single sequence."""
         bsize, points, dim = xs_b.shape
-        ys_b_wide = torch.cat(
-            (
-                ys_b.view(bsize, points, 1),
-                torch.zeros(bsize, points, dim - 1, device=ys_b.device),
-            ),
-            axis=2,
-        )
-        zs = torch.stack((xs_b, ys_b_wide), dim=2)
-        zs = zs.view(bsize, 2 * points, dim)
-        return zs
+        ys_wide = torch.cat([
+            ys_b.view(bsize, points, 1),
+            torch.zeros(bsize, points, dim - 1, device=ys_b.device)
+        ], dim=2)
+        zs = torch.stack([xs_b, ys_wide], dim=2)      # [B, P, 2, D]
+        return zs.view(bsize, 2 * points, dim)        # [B, 2P, D]
 
-    def forward(self, xs, ys, inds=None):
+    def get_features(self, xs, ys):
+        """
+        Run the model up to the backbone, then return the hidden states
+        *at* the x-positions (even indices in the sequence).
+        Output shape: [B, points, feature_dim]
+        """
+        zs     = self._combine(xs, ys)
+        embeds = self._read_in(zs)
+        hidden = self._backbone(inputs_embeds=embeds).last_hidden_state
+        return hidden[:, ::2, :]       # pick out every even token
+
+    def forward(self, xs, ys, inds=None, return_features=False):
+        """
+        If return_features=True, skip the read-out head and just hand back
+        the feature tensor (for probing).  Otherwise return your usual
+        prediction[:, ::2, 0][:, inds].
+        """
+        if return_features:
+            return self.get_features(xs, ys)
+
+        # --- regular prediction path ---
         if inds is None:
-            inds = torch.arange(ys.shape[1])
-        else:
-            inds = torch.tensor(inds)
-            if max(inds) >= ys.shape[1] or min(inds) < 0:
-                raise ValueError("inds contain indices where xs and ys are not defined")
-        zs = self._combine(xs, ys)
+            inds = torch.arange(ys.shape[1], device=ys.device)
+        zs     = self._combine(xs, ys)
         embeds = self._read_in(zs)
         output = self._backbone(inputs_embeds=embeds).last_hidden_state
-        prediction = self._read_out(output)
-        return prediction[:, ::2, 0][:, inds]  # predict only on xs
-
+        preds  = self._read_out(output)                 # [B, 2P, 1]
+        # take only the ys corresponding to xs (even slots) and select indices
+        return preds[:, ::2, 0][:, inds]
 
 class NNModel:
     def __init__(self, n_neighbors, weights="uniform"):

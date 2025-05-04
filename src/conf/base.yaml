@@ -1,26 +1,36 @@
 inherit: 
-    - models/standard.yaml
-    - wandb.yaml
+  - models/standard.yaml
+  - wandb.yaml
 
 model:
-    n_dims: 10
-    n_positions: 101
+  n_dims:      10
+  n_positions: 101
 
 training:
-    data: gaussian
-    task_kwargs: {}
-    batch_size: 64
-    learning_rate: 0.0001
-    save_every_steps: 100
-    keep_every_steps: 1000
-    train_steps: 50000
-    curriculum:
-        dims:
-            start: 5
-            end: 10
-            inc: 1
-            interval: 250
+  data:                 gaussian
+  task_kwargs:          {}
+  batch_size:           64
+  learning_rate:        0.0001
+  save_every_steps:     100
+  keep_every_steps:     1000
+  train_steps:          50000
+  curriculum:
+    dims:
+      start:    5
+      end:      10
+      inc:      1
+      interval: 250
 
 wandb:
-    entity: "cs182-final-project"
-    project: "Sinusoidal-ICL"
+  entity:  "cs182-final-project"
+  project: "Sinusoidal-ICL"
+
+probing:
+  enabled:            true                  # turn on linear‐probe logging
+  output_dim:         1                     # same as your main regression head
+  lr:                 0.001                 # probe learning rate
+  probe_batch_size:   32                    # how many samples per probe mini‐batch
+  probe_epochs:       1                     # update the head for this many mini‐batches
+  probe_every_steps:  1000                  # run probe every 1k training steps
+  task:               sinusoidal_regression # re‐use the same task API
+  task_kwargs:        {}                    # extra args for your probe sampler

@@ -1,5 +1,30 @@
+# inherit:
+#     - base.yaml
+
+# training:
+#     task: sinusoidal_regression
+#     task_kwargs:
+#         scale: 1.0
+#         freq_min: 0.5
+#         freq_max: 2.0
+#     data: uniform
+#     curriculum:
+#         points:
+#             start: 11
+#             end: 41
+#             inc: 2
+#             interval: 250
+
+# out_dir: ../models/sinusoidal_regression
+
+# wandb:
+#     name: "sinusoidal_regression_standard" 
 inherit:
     - base.yaml
+
+model:
+    n_dims: 1
+    n_positions: 101
 
 training:
     task: sinusoidal_regression
@@ -14,8 +39,13 @@ training:
             end: 41
             inc: 2
             interval: 250
+        dims:
+            start: 10
+            end: 10
+            inc: 1
+            interval: 250
 
-out_dir: ../models/sinusoidal_regression
+out_dir: ../models/sinusoidal_regression_10d
 
 wandb:
-    name: "sinusoidal_regression_standard" 
+    name: "sinusoidal_regression_10d" 
