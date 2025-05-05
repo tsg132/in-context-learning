@@ -9,10 +9,8 @@ import models
 from eval import eval_batch, eval_model, aggregate_metrics, build_evals, compute_evals
 from tqdm import tqdm
 
-# Path to the fixed kernel parameters
 fixed_pool_path = "models/rff_fixed/3b8a0ce2-a1bb-4acd-92ca-a482a650e3f6/fixed_pool.pt"
 
-# Load the fixed kernel parameters
 fixed_pool = torch.load(fixed_pool_path)
 w_rff = fixed_pool['w_rff']
 b_rff = fixed_pool['b_rff']
@@ -27,7 +25,6 @@ batch_size = 64
 n_points = 60  # Number of points in the sequence
 num_eval_examples = 1280  # Total examples to evaluate
 
-# Create kernel ridge regresxsion baseline
 class KernelRidgeWrapper:
     def __init__(self, w_rff, b_rff, alpha=1e-6):
         self.kernel_ridge = KernelRidgeFixedBaseline(w_rff, b_rff, alpha)
@@ -70,11 +67,9 @@ class KernelRidgeWrapper:
             
         return torch.stack(preds, dim=1)
 
-# Create our models list
 kernel_ridge = KernelRidgeWrapper(w_rff, b_rff, alpha=1e-6)
 all_models = [kernel_ridge]
 
-# Add ALL other baseline models for comparison (matching models.py rff_fixed list)
 baselines = [
     models.NNModel(n_neighbors=3),
     models.DecisionTreeModel(max_depth=4),
@@ -122,6 +117,5 @@ def evaluate_models():
 if __name__ == "__main__":
     metrics = evaluate_models()
     
-    # Save full results
     with open("FINAL_rff_fixed_evaluation_results.json", "w") as f:
         json.dump(metrics, f, indent=2) 

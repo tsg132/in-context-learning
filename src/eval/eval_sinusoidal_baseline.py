@@ -27,7 +27,6 @@ def evaluate_baselines(
     print(f"- Regularization (alpha): {alpha}")
     print(f"- Max iterations: {n_iterations}")
     
-    # Create baselines
     sinusoidal_baseline = SinusoidalRegressionBaseline(
         n_dims=n_dims, 
         lr=lr, 
@@ -41,13 +40,11 @@ def evaluate_baselines(
         alpha=alpha
     )
     
-    # Create task sampler and data sampler
     task_name = f"sinusoidal_regression_{n_dims}d"
     data_name = "gaussian"
     task_sampler_kwargs = {}
     data_sampler_kwargs = {}
     
-    # Run evaluation for sinusoidal baseline
     print("\nEvaluating Sinusoidal Regression Baseline...")
     sin_metrics = eval_model(
         model=sinusoidal_baseline,
@@ -62,7 +59,6 @@ def evaluate_baselines(
         task_sampler_kwargs=task_sampler_kwargs
     )
     
-    # Run evaluation for Fourier baseline
     print("\nEvaluating Fourier Baseline for comparison...")
     fourier_metrics = eval_model(
         model=fourier_baseline,
@@ -77,7 +73,6 @@ def evaluate_baselines(
         task_sampler_kwargs=task_sampler_kwargs
     )
     
-    # Save results
     metrics = {
         sinusoidal_baseline.name: sin_metrics,
         fourier_baseline.name: fourier_metrics
@@ -88,10 +83,8 @@ def evaluate_baselines(
             json.dump(metrics, f, indent=2)
         print(f"Results saved to {output_file}")
     
-    # Plot comparison
     plot_comparison(metrics, n_dims, output_file.replace('.json', '.png'))
     
-    # Print summary
     print("\nResults Summary (Sinusoidal Baseline):")
     print(f"Mean MSE at 5 examples: {sin_metrics['mean'][5]:.6f}")
     print(f"Mean MSE at 10 examples: {sin_metrics['mean'][10]:.6f}")
@@ -112,11 +105,9 @@ def plot_comparison(metrics, n_dims, output_file):
     """Plot comparison of baselines"""
     plt.figure(figsize=(10, 6))
     
-    # Set up colors and styles
     sns.set_theme('notebook', 'darkgrid')
     palette = sns.color_palette('colorblind')
     
-    # Plot each model's performance
     for i, (model_name, model_metrics) in enumerate(metrics.items()):
         display_name = "Sinusoidal Baseline" if "sinusoidal" in model_name else "Fourier Baseline"
         plt.plot(
@@ -127,7 +118,6 @@ def plot_comparison(metrics, n_dims, output_file):
             linewidth=2
         )
         
-        # Add confidence bands
         plt.fill_between(
             list(range(len(model_metrics['bootstrap_low']))),
             model_metrics['bootstrap_low'],

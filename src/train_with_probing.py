@@ -26,10 +26,9 @@ torch.backends.cudnn.benchmark = True
 def freeze_layers_except_last(model):
     """Freezes all layers except the last layer(s) for linear probing."""
     for name, param in model.named_parameters():
-        if 'head' not in name and 'final' not in name and 'output' not in name:  # Common names for final layers
+        if 'head' not in name and 'final' not in name and 'output' not in name:  
             param.requires_grad = False
     
-    # Log number of trainable parameters
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Trainable parameters: {trainable_params:,} ({trainable_params/total_params:.2%} of total)")
@@ -54,13 +53,12 @@ def sample_seeds(total_seeds, count):
 def train(model, args, probe):
 
     probe_head, probe_opt, probe_loss_fn, probe_loader = probe
-    # If linear probing is enabled, freeze all layers except the last
     if args.training.get('linear_probe', False):
         print("Enabling linear probing - freezing all layers except last...")
         freeze_layers_except_last(model)
         
     optimizer = torch.optim.Adam(
-        [p for p in model.parameters() if p.requires_grad],  # Only optimize unfrozen parameters
+        [p for p in model.parameters() if p.requires_grad],  
         lr=args.training.learning_rate
     )
     curriculum = Curriculum(args.training.curriculum)
