@@ -68,14 +68,11 @@ def train(model, args):
     task_kwargs = dict(args.training.task_kwargs)
 
     if args.training.task == "rff_fixed":
-
         from tasks import RFFRegressionFixed
-
         fixed_pool = RFFRegressionFixed.generate_pool_dict(n_dims, args.training.num_tasks, args.training.rff_dim)
-
+        print("Generated fixed kernel for rff_fixed:")
+        print("w_rff shape:", fixed_pool["w_rff"].shape, "b_rff shape:", fixed_pool["b_rff"].shape)
         task_kwargs["pool_dict"] = fixed_pool
-
-        # Save the fixed_pool to disk for later evaluation
         pool_path = os.path.join(args.out_dir, "fixed_pool.pt")
         torch.save(fixed_pool, pool_path)
 
@@ -293,10 +290,11 @@ def train(model, args):
             training_state = {
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "probe_head_state_dict": probe_head.state_dict(),
-                "probe_optimizer_state_dict": probe_optimizer.state_dict(),
                 "train_step": i,
             }
+            if probe_head is not None:
+                training_state["probe_head_state_dict"] = probe_head.state_dict()
+                training_state["probe_optimizer_state_dict"] = probe_optimizer.state_dict()
             torch.save(training_state, state_path)
 
         if args.probing.enabled and not args.test_run and i % args.probing.probe_every_steps == 0:

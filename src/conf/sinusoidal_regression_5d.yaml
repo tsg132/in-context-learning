@@ -2,7 +2,7 @@ inherit:
     - base.yaml
 
 model:
-    n_dims: 1
+    n_dims: 5
     n_positions: 101
 
 training:
@@ -27,4 +27,4 @@ training:
 out_dir: ../models/sinusoidal_regression_5d
 
 wandb:
-    name: "sinusoidal_regression_5d" 
+    name: "FINAL_sinusoidal_regression_5d" 

@@ -8,7 +8,7 @@ import warnings
 from sklearn import tree
 import xgboost as xgb
 
-from tasks import FourierFitBaseline
+from tasks import FourierFitBaseline, KernelRidgeFixedBaseline
 
 from base_models import NeuralNetwork, ParallelNetworks
 
@@ -81,8 +81,15 @@ def get_relevant_baselines(task_name):
             (XGBoostModel, {}),
             (AveragingModel, {}),
         ],
-        "sinusoidal_regression_10d": [
-            (FourierFitBaseline, {"n_dims": 10}),
+        "sinusoidal_regression_5d": [
+            (NNModel, {"n_neighbors": 3}),
+            (DecisionTreeModel, {"max_depth": 4}),
+            (DecisionTreeModel, {"max_depth": None}),
+            (XGBoostModel, {}),
+            (AveragingModel, {}),
+        ],
+        "rff_fixed": [
+            (KernelRidgeFixedBaseline, {""}),
             (NNModel, {"n_neighbors": 3}),
             (DecisionTreeModel, {"max_depth": 4}),
             (DecisionTreeModel, {"max_depth": None}),

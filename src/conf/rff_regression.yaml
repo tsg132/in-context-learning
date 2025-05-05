@@ -11,7 +11,6 @@ training:
             end: 41
             inc: 2
             interval: 250
-    # rff_dim: 256  # <- you need to specify rff_dim (set 256 or whatever you want)
 
 out_dir: ../models/rff_regression
 

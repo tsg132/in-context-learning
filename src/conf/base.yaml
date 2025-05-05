@@ -17,7 +17,7 @@ training:
   curriculum:
     dims:
       start:    5
-      end:      10
+      end:      5
       inc:      1
       interval: 250
 
@@ -26,7 +26,7 @@ wandb:
   project: "Sinusoidal-ICL"
 
 probing:
-  enabled:            true                  # turn on linear‐probe logging
+  enabled:            false              # turn on linear‐probe logging
   output_dim:         1                     # same as your main regression head
   lr:                 0.001                 # probe learning rate
   probe_batch_size:   32                    # how many samples per probe mini‐batch

@@ -1,13 +1,17 @@
 inherit:
     - base.yaml
 
+model:
+    n_dims: 5
+    n_positions: 101
+
 training:
     task: rff_fixed
     task_kwargs:
         rff_dim: 16
     curriculum:
         points:
-            start: 10
+            start: 1
             end: 60
             inc: 2
             interval: 250
@@ -16,9 +20,8 @@ training:
             end: 5
             inc: 1
             interval: 250
-    # rff_dim: 256  # <- you need to specify rff_dim (set 256 or whatever you want)
 
 out_dir: ../models/rff_fixed
 
 wandb:
-    name: "rff_regression_fixed"
+    name: "FINAL_rff_regression_fixed"

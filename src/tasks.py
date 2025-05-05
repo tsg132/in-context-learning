@@ -65,7 +65,7 @@ def get_task_sampler(
         "sinusoidal_regression": SinusoidalRegression,
         "rff_fixed": RFFRegressionFixed,
         "sinusoidal_regression_1d": SinusoidalRegression,
-        "sinusoidal_regression_10d": SinusoidalRegression,
+        "sinusoidal_regression_5d": SinusoidalRegression,
     }
     if task_name in task_names_to_classes:
         task_cls = task_names_to_classes[task_name]
@@ -597,16 +597,144 @@ class SinusoidalRegression(Task):
         return mean_squared_error
 
 
+class SinusoidalRegressionBaseline:
+    """
+    Specialized baseline for sinusoidal regression that directly fits the form:
+    y = amplitude * sin(x·frequency + phase)
+    
+    This matches the exact functional form of the SinusoidalRegression task.
+    """
+    def __init__(self, n_dims, lr=0.05, n_iterations=300, alpha=0.001):
+        self.n_dims = n_dims
+        self.lr = lr  # Learning rate for optimization
+        self.n_iterations = n_iterations  # Max number of iterations
+        self.alpha = alpha  # Regularization strength
+        self.name = f"sinusoidal_regression_baseline_n_dims={n_dims}"
+        
+        # Parameters to learn
+        self.amplitude = None
+        self.frequency = None
+        self.phase = None
+        
+    def _loss_fn(self, xs, ys, amplitude, frequency, phase):
+        """Compute MSE loss with L2 regularization"""
+        # Make predictions using current parameters
+        # xs: [N, D], frequency: [D]
+        dot_product = torch.matmul(xs, frequency)  # [N]
+        pred = amplitude * torch.sin(dot_product + phase)  # [N]
+        
+        # Compute loss with regularization
+        mse_loss = ((pred - ys) ** 2).mean()
+        reg_loss = self.alpha * (amplitude**2 + torch.sum(frequency**2) + phase**2)
+        return mse_loss + reg_loss
+    
+    def fit(self, xs, ys):
+        """Fit sinusoidal parameters using gradient descent"""
+        # Skip fitting with too few points
+        if len(xs) < 3:  # Need at least 3 points to fit sine wave parameters
+            self.amplitude = torch.tensor(1.0, device=xs.device)
+            self.frequency = torch.zeros(self.n_dims, device=xs.device)
+            self.phase = torch.tensor(0.0, device=xs.device)
+            return
+            
+        # Initialize parameters with reasonable values
+        # For sinusoidal regression: amplitude ~1.0, frequency ~1.0, phase between 0-2π
+        amplitude = torch.tensor(1.0, device=xs.device, requires_grad=True)
+        frequency = torch.randn(self.n_dims, device=xs.device, requires_grad=True) * 0.1
+        phase = torch.tensor(0.0, device=xs.device, requires_grad=True)
+        
+        # Optimize parameters with Adam
+        optimizer = torch.optim.Adam([amplitude, frequency, phase], lr=self.lr)
+        
+        # Track best parameters
+        best_loss = float('inf')
+        best_params = (amplitude.detach().clone(), 
+                      frequency.detach().clone(),
+                      phase.detach().clone())
+        
+        # Scale iterations based on dataset size, more data needs more iterations
+        iterations = min(self.n_iterations, max(100, 30 * len(xs)))
+        
+        # Train for fixed number of iterations
+        for i in range(iterations):
+            optimizer.zero_grad()
+            loss = self._loss_fn(xs, ys, amplitude, frequency, phase)
+            loss.backward()
+            optimizer.step()
+            
+            # Save best parameters
+            if loss.item() < best_loss:
+                best_loss = loss.item()
+                best_params = (amplitude.detach().clone(), 
+                              frequency.detach().clone(),
+                              phase.detach().clone())
+                
+            # Early stopping if loss is very small
+            if loss.item() < 1e-5:
+                break
+        
+        # Use best parameters found
+        self.amplitude, self.frequency, self.phase = best_params
+        
+    def predict(self, xs):
+        """Predict using fitted parameters"""
+        if self.amplitude is None:
+            return torch.zeros(xs.shape[0] if xs.dim() > 1 else 1, device=xs.device)
+        
+        # Make predictions
+        dot_product = torch.matmul(xs, self.frequency)
+        return self.amplitude * torch.sin(dot_product + self.phase)
+    
+    def __call__(self, xs, ys, inds=None):
+        """
+        In-context learning style prediction. For each index i in inds:
+        1. Fit the model on the first i points
+        2. Predict for the i-th point
+        """
+        B, T = ys.shape
+        if inds is None:
+            inds = range(T)
+            
+        preds = []
+        for i in inds:
+            step_preds = []
+            for b in range(B):
+                if i == 0:
+                    step_preds.append(0.0)
+                    continue
+                    
+                # Create new model for each prediction
+                model = SinusoidalRegressionBaseline(self.n_dims, self.lr, self.n_iterations, self.alpha)
+                
+                # Fit on points seen so far
+                train_xs, train_ys = xs[b, :i], ys[b, :i]
+                model.fit(train_xs, train_ys)
+                
+                # Predict for current point
+                test_x = xs[b, i:i+1].squeeze(0)
+                pred = model.predict(test_x).item()
+                
+                # Clamp prediction for stability
+                step_preds.append(max(-10.0, min(10.0, pred)))
+                
+            preds.append(torch.tensor(step_preds, device=xs.device))
+            
+        return torch.stack(preds, dim=1)
+
+
 class FourierFitBaseline:
     """
     Baseline: fits y = c0 + sum_{j=1}^n_dims sum_{k=1}^n_harmonics [a_{j,k} cos(k x_j) + b_{j,k} sin(k x_j)]
-    to the data using least squares.
+    to the data using regularized least squares (ridge regression).
     """
-    def __init__(self, n_dims, n_harmonics=3):
+    def __init__(self, n_dims, n_harmonics=7, alpha=0.001):
         self.n_dims = n_dims
         self.n_harmonics = n_harmonics
+        self.alpha = alpha  # Regularization parameter
         self.coefs = None
-        self.name = f"fourier_fit_n_dims={n_dims}_n_harmonics={n_harmonics}"
+        self.feature_means = None
+        self.feature_stds = None
+        self.name = f"fourier_fit_n_dims={n_dims}_n_harmonics={n_harmonics}_alpha={alpha}"
 
     def _fourier_features(self, xs):
         # xs: [N, n_dims] or [n_dims]
@@ -615,21 +743,90 @@ class FourierFitBaseline:
             # Single example: [n_dims] -> [1, n_dims]
             xs = xs.unsqueeze(0)
         
+        # Generate Fourier features without limiting harmonics
         feats = [torch.ones(xs.shape[0], 1, device=xs.device)]
         for j in range(self.n_dims):
             for k in range(1, self.n_harmonics + 1):
                 feats.append(torch.sin(k * xs[:, j:j+1]))
                 feats.append(torch.cos(k * xs[:, j:j+1]))
-        return torch.cat(feats, dim=1)  # [N, 1 + 2*n_harmonics*n_dims]
+        
+        features = torch.cat(feats, dim=1)  # [N, 1 + 2*n_harmonics*n_dims]
+        return features
+
+    def _normalize_features(self, X, is_train=False):
+        """Normalize features for better numerical stability"""
+        if is_train:
+            # Calculate mean and std on training data
+            self.feature_means = X.mean(dim=0, keepdim=True)
+            self.feature_stds = X.std(dim=0, keepdim=True) + 1e-8  # avoid division by zero
+            
+            # Don't normalize the bias term (first column)
+            self.feature_means[:, 0] = 0
+            self.feature_stds[:, 0] = 1
+            
+        # Apply normalization using stored statistics
+        X_normalized = (X - self.feature_means) / self.feature_stds
+        return X_normalized
 
     def fit(self, xs, ys):
-        # xs: [N, n_dims], ys: [N]
+        """Fit the model using ridge regression"""
+        # Check if we have enough data to fit
         X = self._fourier_features(xs)
-        # Use torch.linalg.lstsq for modern PyTorch
-        self.coefs = torch.linalg.lstsq(X, ys.unsqueeze(1)).solution.squeeze(1)
+        n_samples = xs.shape[0]
+        n_features = X.shape[1]
+        
+        # Don't fit if we have too few examples
+        if n_samples < 2:
+            self.coefs = torch.zeros(n_features, device=xs.device)
+            return
+            
+        # Normalize features
+        X_normalized = self._normalize_features(X, is_train=True)
+        
+        # Apply ridge regression: (X^T X + alpha I)^{-1} X^T y
+        XtX = X_normalized.t() @ X_normalized
+        identity = torch.eye(n_features, device=xs.device)
+        
+        # Add regularization term
+        reg_XtX = XtX + self.alpha * identity
+        
+        # Compute the regularized solution
+        try:
+            # Try using solve first (more stable)
+            XtY = X_normalized.t() @ ys.unsqueeze(1)
+            self.coefs = torch.linalg.solve(reg_XtX, XtY).squeeze(1)
+        except RuntimeError:
+            # Fallback to lstsq if matrix is singular
+            try:
+                self.coefs = torch.linalg.lstsq(
+                    X_normalized, 
+                    ys.unsqueeze(1),
+                    rcond=1e-4  # Use higher rcond for more stability
+                ).solution.squeeze(1)
+            except RuntimeError:
+                # Last resort: simple gradient descent
+                self.coefs = torch.zeros(n_features, device=xs.device)
+                optimizer = torch.optim.Adam([self.coefs], lr=0.01)
+                for _ in range(100):  # Simple GD for a few iterations
+                    optimizer.zero_grad()
+                    pred = X_normalized @ self.coefs
+                    loss = ((pred - ys) ** 2).mean() + self.alpha * (self.coefs ** 2).mean()
+                    loss.backward()
+                    optimizer.step()
 
     def predict(self, xs):
+        """Predict using the fitted model"""
+        if self.coefs is None:
+            # Return zero if model hasn't been fit
+            return torch.zeros(xs.shape[0] if xs.dim() > 1 else 1, device=xs.device)
+            
         X = self._fourier_features(xs)
+        
+        # Apply the same normalization as during training
+        if self.feature_means is not None:
+            X = self._normalize_features(X)
+            
+        # Make prediction
         return X @ self.coefs
         
     def __call__(self, xs, ys, inds=None):
@@ -656,16 +853,28 @@ class FourierFitBaseline:
             for b in range(xs.shape[0]):
                 # Fit model on points seen so far
                 train_xs, train_ys = xs[b, :i], ys[b, :i]
-                self.fit(train_xs, train_ys)
+                
+                # Reset model for each new fit
+                model = FourierFitBaseline(self.n_dims, self.n_harmonics, self.alpha)
+                
+                # Fit and predict
+                model.fit(train_xs, train_ys)
                 
                 # Predict for the current point
                 test_x = xs[b, i]  # Get the actual point, not a slice
-                pred = self.predict(test_x)
-                batch_preds.append(pred.item() if isinstance(pred, torch.Tensor) else pred)
+                pred = model.predict(test_x)
+                
+                # Bound predictions to reasonable values to avoid explosion
+                if isinstance(pred, torch.Tensor):
+                    pred = torch.clamp(pred, -10.0, 10.0)
+                    batch_preds.append(pred.item())
+                else:
+                    batch_preds.append(min(10.0, max(-10.0, pred)))
                 
             preds.append(torch.tensor(batch_preds, device=xs.device))
             
         return torch.stack(preds, dim=1)
+
 
 
 class KernelRidgeFixedBaseline:
@@ -704,3 +913,76 @@ class KernelRidgeFixedBaseline:
     def predict(self, xs):
         X = self._rff_features(xs)
         return X @ self.coefs
+
+
+class GaussianProcessPeriodicBaseline:
+    """
+    Baseline: Gaussian Process Regression with a periodic kernel (ExpSineSquared).
+    Uses sklearn's GaussianProcessRegressor. Suitable for 1D and multi-dimensional sinusoidal regression.
+    For multi-dimensional input, uses a product of periodic kernels (one per dimension).
+    """
+    def __init__(self, n_dims, length_scale=1.0, periodicity=1.0, alpha=1e-6):
+        from sklearn.gaussian_process import GaussianProcessRegressor
+        from sklearn.gaussian_process.kernels import ExpSineSquared, Product
+        self.n_dims = n_dims
+        self.length_scale = length_scale
+        self.periodicity = periodicity
+        self.alpha = alpha
+        self.GaussianProcessRegressor = GaussianProcessRegressor
+        self.ExpSineSquared = ExpSineSquared
+        self.Product = Product
+        self.gp = None
+
+    def _build_kernel(self):
+        # For multi-dim, use product of periodic kernels
+        kernel = self.ExpSineSquared(length_scale=self.length_scale, periodicity=self.periodicity)
+        if self.n_dims > 1:
+            k = kernel
+            for _ in range(self.n_dims - 1):
+                k = self.Product(k, kernel)
+            return k
+        else:
+            return kernel
+
+    def fit(self, xs, ys):
+        # xs: [N, n_dims] or [N], ys: [N]
+        xs = xs.cpu().numpy() if hasattr(xs, 'cpu') else xs
+        ys = ys.cpu().numpy() if hasattr(ys, 'cpu') else ys
+        if xs.ndim == 1:
+            xs = xs.reshape(-1, 1)
+        kernel = self._build_kernel()
+        self.gp = self.GaussianProcessRegressor(kernel=kernel, alpha=self.alpha, normalize_y=True)
+        self.gp.fit(xs, ys)
+
+    def predict(self, xs):
+        xs = xs.cpu().numpy() if hasattr(xs, 'cpu') else xs
+        if xs.ndim == 1:
+            xs = xs.reshape(-1, 1)
+        return self.gp.predict(xs)
+
+    def __call__(self, xs, ys, inds=None):
+        """
+        In-context learning style prediction. For each index i in inds:
+        1. Fit the GP on the first i points
+        2. Predict for the i-th point
+        """
+        import torch
+        if inds is None:
+            inds = range(ys.shape[1])
+        else:
+            if max(inds) >= ys.shape[1] or min(inds) < 0:
+                raise ValueError("inds contain indices where xs and ys are not defined")
+        preds = []
+        for i in inds:
+            if i == 0:
+                preds.append(torch.zeros_like(ys[:, 0])) # predict zero for first point
+                continue
+            batch_preds = []
+            for b in range(xs.shape[0]):
+                train_xs, train_ys = xs[b, :i], ys[b, :i]
+                self.fit(train_xs, train_ys)
+                test_x = xs[b, i]
+                pred = self.predict(test_x)
+                batch_preds.append(float(pred))
+            preds.append(torch.tensor(batch_preds, device=xs.device))
+        return torch.stack(preds, dim=1)
